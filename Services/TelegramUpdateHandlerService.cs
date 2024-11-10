@@ -10,7 +10,8 @@ namespace ImageGeneratorTgBot.Services;
 
 public class TelegramUpdateHandlerService(
 	ILogger<TelegramUpdateHandlerService> _logger,
-	ITelegramBotClient _telegramBotClient) : IUpdateHandler
+	ITelegramBotClient _telegramBotClient,
+	HuggingFaceService _huggingFace) : IUpdateHandler
 {
 	private const string _logTag = $"[{nameof(TelegramUpdateHandlerService)}]";
 
@@ -47,7 +48,7 @@ public class TelegramUpdateHandlerService(
 
 	private async Task OnMessage(Message msg)
 	{
-		_logger.LogDebug("{LogTag} Receive message type: {MessageType}", _logTag, msg.Type);
+		_logger.LogInformation("{LogTag} Receive message type: {MessageType}", _logTag, msg.Type);
 		if (msg.Text is not { } messageText)
 			return;
 
@@ -62,7 +63,8 @@ public class TelegramUpdateHandlerService(
 			"/poll" => SendPoll(msg),
 			"/poll_anonymous" => SendAnonymousPoll(msg),
 			"/throw" => FailingHandler(msg),
-			_ => Usage(msg)
+			"/start" => Usage(msg),
+			_ => SendText(msg)
 		});
 		_logger.LogInformation("{LogTag} The message was sent with id: {SentMessageId}", _logTag, sentMessage.Id);
 	}
@@ -84,12 +86,31 @@ public class TelegramUpdateHandlerService(
 		return await _telegramBotClient.SendMessage(msg.Chat, usage, parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove());
 	}
 
+	async Task<Message> SendText(Message msg)
+	{
+		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.Typing);
+		var prompt = msg.Text;
+		var answer = await _huggingFace.SendPromptAsync<string>(prompt);
+		var textToSend = $"""
+		               {answer}
+		               
+		               <b>{prompt}</b>. <i>Source</i>: <a href='https://huggingface.co/google/flan-t5-large'>HuggingFace Flan T5 Large Model</a>
+		               """;
+
+
+		return await _telegramBotClient.SendMessage(msg.Chat, textToSend, ParseMode.Html);
+	}
+
 	async Task<Message> SendPhoto(Message msg)
 	{
 		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.UploadPhoto);
-		await Task.Delay(2000); // simulate a long task
-		await using var fileStream = new FileStream("Files/bot.gif", FileMode.Open, FileAccess.Read);
-		return await _telegramBotClient.SendPhoto(msg.Chat, fileStream, caption: "Read https://telegrambots.github.io/book/");
+		var prompt = msg.Text.Split(' ', 2)[1];
+		var photoBytes = await _huggingFace.SendPromptAsync<byte[]>(prompt);
+		using var stream = new MemoryStream(photoBytes);
+		var inputFile = new InputFileStream(stream, "photo.jpg");
+		var caption = $"<b>{prompt}</b>. <i>Source</i>: <a href='https://huggingface.co/stabilityai/stable-diffusion-3.5-large'>HuggingFace StableDiffusion Model</a>";
+
+		return await _telegramBotClient.SendPhoto(msg.Chat, inputFile, caption, ParseMode.Html);
 	}
 
 	// Send inline keyboard. You can process responses in OnCallbackQuery handler
