@@ -9,12 +9,12 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Configuration.AddEnvironmentVariables();
 
 builder.Services.Configure<TelegramBotConfiguration>(
-	builder.Configuration.GetSection("BotConfiguration"));
+	builder.Configuration.GetSection("TelegramBotConfiguration"));
 
 builder.Services.AddHttpClient("TelegramWebhook")
-	.AddTypedClient<ITelegramBotClient>((httpClient, sp) => 
+	.AddTypedClient<ITelegramBotClient>((httpClient, serviceProvider) => 
 	{
-		var botConfig = sp.GetRequiredService<IOptions<TelegramBotConfiguration>>().Value;
+		var botConfig = serviceProvider.GetRequiredService<IOptions<TelegramBotConfiguration>>().Value;
 		return new TelegramBotClient(botConfig.BotToken, httpClient);
 	})
 	.RemoveAllLoggers(); // WARNING: TOKEN EXPOSURE
@@ -22,6 +22,16 @@ builder.Services.AddHttpClient("TelegramWebhook")
 builder.Services.AddSingleton<TelegramUpdateHandlerService>();
 builder.Services.AddSingleton<TelegramWebhookSetupService>();
 builder.Services.ConfigureTelegramBotMvc();
+
+builder.Services.AddHttpClient<HuggingFaceService>((serviceProvider, httpClient) =>
+	{
+		var config = serviceProvider.GetRequiredService<IOptions<HuggingFaceConfiguration>>().Value;
+
+		httpClient.BaseAddress = new Uri(config.BaseUrl.AbsoluteUri);
+		httpClient.DefaultRequestHeaders.Authorization =
+			new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.AuthToken);
+	})
+	.RemoveAllLoggers(); // WARNING: TOKEN EXPOSURE
 
 builder.Services.AddControllers();
 
