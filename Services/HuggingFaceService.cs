@@ -1,13 +1,13 @@
 using System.Text;
 using System.Text.Json;
 using ImageGeneratorTgBot.Configurations;
-using ImageGeneratorTgBot.Models;
 using Microsoft.Extensions.Options;
 
 namespace ImageGeneratorTgBot.Services;
 
 public class HuggingFaceService(
 	HttpClient _httpClient,
+	HuggingFaceChatAdapter _chatAdapter,
 	IOptions<HuggingFaceConfiguration> _config,
 	ILogger<HuggingFaceService> _logger)
 {
@@ -15,44 +15,55 @@ public class HuggingFaceService(
 
 	public async Task<T> SendPromptAsync<T>(string prompt)
 	{
-		var payload = new { inputs = prompt };
-		var jsonData = JsonSerializer.Serialize(payload);
-		using var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
-
 		var endpoint = GetEndpointFromType<T>();
 
 		try
 		{
-			_logger.LogDebug($"{_logTag} Sending request to HuggingFace API at {endpoint}.");
-
-			var response = await _httpClient.PostAsync(endpoint, content);
-			response.EnsureSuccessStatusCode();
-
-			_logger.LogDebug($"{_logTag} Received successful response from HuggingFace API.");
-
 			if (typeof(T) == typeof(string))
 			{
-				var responseBody = await response.Content.ReadAsStringAsync();
-				var modelResponse = JsonSerializer.Deserialize<FlanT5Model>(responseBody);
-				if (modelResponse != null) 
-					return (T)(object)modelResponse.GeneratedText;
+				_logger.LogDebug("{LogTag} Wrapping prompt {Prompt}", _logTag, prompt);
 
-				throw new JsonException("Unable to deserialize the response into FlanT5Model.");
+				var request = _chatAdapter.CreateRequest(endpoint, prompt);
+
+				_logger.LogInformation("{LogTag} Sending request to HuggingFace API at {Endpoint}", _logTag, endpoint);
+
+				var response = await _httpClient.PostAsync(_config.Value.TextEndpoint, request);
+				response.EnsureSuccessStatusCode();
+
+				_logger.LogInformation("{LogTag} Received successful response from HuggingFace API", _logTag);
+
+				var responseStream = await response.Content.ReadAsStreamAsync();
+				var responseText = await _chatAdapter.ProcessStreamedResponse(responseStream);
+
+				return (T)(object) responseText;
 			}
 
 			if (typeof(T) == typeof(byte[]))
+			{
+				var payload = new { inputs = prompt };
+				var jsonData = JsonSerializer.Serialize(payload);
+				using var content = new StringContent(jsonData, Encoding.UTF8, "application/json");
+
+				_logger.LogInformation("{LogTag} Sending request to HuggingFace API at {Endpoint}", _logTag, endpoint);
+
+				var response = await _httpClient.PostAsync(endpoint, content);
+				response.EnsureSuccessStatusCode();
+
+				_logger.LogInformation("{LogTag} Received successful response from HuggingFace API", _logTag);
+
 				return (T)(object) await response.Content.ReadAsByteArrayAsync();
+			}
 
 			throw new InvalidOperationException("Unsupported return type");
 		}
 		catch (HttpRequestException ex)
 		{
-			_logger.LogError(ex, $"{_logTag} HttpRequestException while sending prompt to HuggingFace: {ex.Message}");
+			_logger.LogError(ex, "{LogTag} HttpRequestException while sending prompt to HuggingFace: {Message}", _logTag, ex.Message);
 			throw new ApplicationException("HttpRequestException while sending prompt to HuggingFace.", ex);
 		}
 		catch (Exception ex)
 		{
-			_logger.LogError(ex, $"{_logTag} Unknown error while sending prompt to HuggingFace.");
+			_logger.LogError(ex, "{LogTag} Unknown error while sending prompt to HuggingFace", _logTag);
 			throw;
 		}
 	}

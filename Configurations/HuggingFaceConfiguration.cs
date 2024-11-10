@@ -6,4 +6,5 @@ public class HuggingFaceConfiguration
 	public Uri BaseUrl { get; init; } = default!;
 	public string ImageGenerator { get; init; } = default!;
 	public string TextGenerator { get; init; } = default!;
+	public string TextEndpoint { get; init; } = default!;
 }

@@ -23,7 +23,10 @@ builder.Services.AddSingleton<TelegramUpdateHandlerService>();
 builder.Services.AddSingleton<TelegramWebhookSetupService>();
 builder.Services.ConfigureTelegramBotMvc();
 
-builder.Services.AddHttpClient<HuggingFaceService>((serviceProvider, httpClient) =>
+builder.Services.Configure<HuggingFaceConfiguration>(
+	builder.Configuration.GetSection("HuggingFaceConfiguration"));
+
+builder.Services.AddHttpClient<HuggingFaceService>("HuggingFaceService", (serviceProvider, httpClient) =>
 	{
 		var config = serviceProvider.GetRequiredService<IOptions<HuggingFaceConfiguration>>().Value;
 
@@ -32,6 +35,8 @@ builder.Services.AddHttpClient<HuggingFaceService>((serviceProvider, httpClient)
 			new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", config.AuthToken);
 	})
 	.RemoveAllLoggers(); // WARNING: TOKEN EXPOSURE
+
+builder.Services.AddSingleton<HuggingFaceChatAdapter>();
 
 builder.Services.AddControllers();
 
