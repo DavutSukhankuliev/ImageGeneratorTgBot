@@ -3,8 +3,8 @@ using Supabase.Postgrest.Models;
 
 namespace ImageGeneratorTgBot.Models;
 
-[Table("Users")]
-public class User : BaseModel
+[Table("Supscriptions")]
+public class Supscription : BaseModel
 {
 	[PrimaryKey("id", false)]
 	public int Id { get; set; }
@@ -12,6 +12,9 @@ public class User : BaseModel
 	[Column("created_at", ignoreOnInsert: true)]
 	public string CreatedAt { get; set; }
 
-	[Column("chat_id")]
-	public string ChatId { get; set; }
+	[Column("expiration_date")]
+	public string? ExpirationDate { get; set; }
+
+	[Column("user_id")]
+	public int UserId { get; set; }
 }
