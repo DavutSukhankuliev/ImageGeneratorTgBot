@@ -1,21 +1,24 @@
+using ImageGeneratorTgBot.Models;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.InlineQueryResults;
 using Telegram.Bot.Types.ReplyMarkups;
+using User = ImageGeneratorTgBot.Models.User;
 
 namespace ImageGeneratorTgBot.Services;
 
 public class TelegramUpdateHandlerService(
 	ILogger<TelegramUpdateHandlerService> _logger,
 	ITelegramBotClient _telegramBotClient,
-	HuggingFaceService _huggingFace) : IUpdateHandler
+	HuggingFaceService _huggingFace,
+	SupabaseService _supabaseService) : IUpdateHandler
 {
 	private const string _logTag = $"[{nameof(TelegramUpdateHandlerService)}]";
 
-	private static readonly InputPollOption[] _pollOptions = ["Hello", "World!"];
+	private readonly Dictionary<long, string> _userStates = new();
+	private readonly Dictionary<string, object> _filter = new();
 
 	public async Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, HandleErrorSource source, CancellationToken cancellationToken)
 	{
@@ -31,16 +34,7 @@ public class TelegramUpdateHandlerService(
 		await (update switch
 		{
 			{ Message: { } message }                        => OnMessage(message),
-			{ EditedMessage: { } message }                  => OnMessage(message),
 			{ CallbackQuery: { } callbackQuery }            => OnCallbackQuery(callbackQuery),
-			{ InlineQuery: { } inlineQuery }                => OnInlineQuery(inlineQuery),
-			{ ChosenInlineResult: { } chosenInlineResult }  => OnChosenInlineResult(chosenInlineResult),
-			{ Poll: { } poll }                              => OnPoll(poll),
-			{ PollAnswer: { } pollAnswer }                  => OnPollAnswer(pollAnswer),
-			// ChannelPost:
-			// EditedChannelPost:
-			// ShippingQuery:
-			// PreCheckoutQuery:
 
 			_                                               => UnknownUpdateHandlerAsync(update)
 		});
@@ -49,24 +43,144 @@ public class TelegramUpdateHandlerService(
 	private async Task OnMessage(Message msg)
 	{
 		_logger.LogInformation("{LogTag} Receive message type: {MessageType}", _logTag, msg.Type);
-		if (msg.Text is not { } messageText)
-			return;
 
-		Message sentMessage = await (messageText.Split(' ')[0] switch
+		if (_userStates.TryGetValue(msg.From.Id, out string? state))
 		{
-			"/photo" => SendPhoto(msg),
-			"/inline_buttons" => SendInlineKeyboard(msg),
-			"/keyboard" => SendReplyKeyboard(msg),
-			"/remove" => RemoveKeyboard(msg),
-			"/request" => RequestContactAndLocation(msg),
-			"/inline_mode" => StartInlineQuery(msg),
-			"/poll" => SendPoll(msg),
-			"/poll_anonymous" => SendAnonymousPoll(msg),
-			"/throw" => FailingHandler(msg),
-			"/start" => Usage(msg),
-			_ => SendText(msg)
-		});
-		_logger.LogInformation("{LogTag} The message was sent with id: {SentMessageId}", _logTag, sentMessage.Id);
+			string response;
+
+			_logger.LogInformation("{LogTag} Receive message: {MessageType}", _logTag, msg.Text);
+
+			switch (state)
+			{
+				case "awaiting_time":
+					if (DateTimeOffset.TryParse(msg.Text, out var timeOffset))
+					{
+						response = "Time saved!";
+						_userStates.Remove(msg.From.Id);
+
+						_logger.LogInformation("{LogTag} Parsed time: {Time}", _logTag, timeOffset);
+
+						_filter.Add("chat_id", msg.From.Id.ToString());
+						var userExists = await _supabaseService.GetDataAsync<User>(_filter);
+						_filter.Remove("chat_id");
+						if (userExists != null)
+						{
+							_filter.Add("user_id", userExists.Id);
+							var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
+							_filter.Remove("user_id");
+							if (userSettingsExists != null)
+							{
+								var newSettings = userSettingsExists;
+								newSettings.TimeToSend = timeOffset.ToString();
+								await _supabaseService.UpdateDataAsync(newSettings.Id, newSettings);
+							}
+							else
+							{
+								var newSettings = new UserSettings
+								{
+									UserId = userExists.Id,
+									TimeToSend = timeOffset.ToString(),
+									Themes = string.Empty,
+									Function = string.Empty
+								};
+								await _supabaseService.AddDataAsync(newSettings);
+							}
+						}
+					}
+					else
+					{
+						response = "Invalid time format. Please use the format HH:MM:SS+ZZ";
+					}
+					break;
+
+				case "awaiting_themes":
+					var themes = msg.Text;
+					response = "Themes saved!";
+
+					_userStates.Remove(msg.From.Id);
+					_filter.Add("chat_id", msg.From.Id.ToString());
+					var userExistsForThemes = await _supabaseService.GetDataAsync<User>(_filter);
+					_filter.Remove("chat_id");
+					if (userExistsForThemes != null)
+					{
+						_filter.Add("user_id", userExistsForThemes.Id);
+						var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
+						_filter.Remove("user_id");
+						if (userSettingsExists != null)
+						{
+							var newSettings = userSettingsExists;
+							newSettings.Themes = themes;
+							await _supabaseService.UpdateDataAsync(newSettings.Id, newSettings);
+						}
+						else
+						{
+							var newSettings = new UserSettings
+							{
+								UserId = userExistsForThemes.Id,
+								Themes = themes,
+								TimeToSend = string.Empty,
+								Function = string.Empty
+							};
+							await _supabaseService.AddDataAsync(newSettings);
+						}
+					}
+					break;
+
+				case "awaiting_plots":
+					var plots = msg.Text;
+					response = "Plots saved!";
+					_userStates.Remove(msg.From.Id);
+
+					_filter.Add("chat_id", msg.From.Id.ToString());
+					var userExistsForPlots = await _supabaseService.GetDataAsync<User>(_filter);
+					_filter.Remove("chat_id");
+					if (userExistsForPlots != null)
+					{
+						_filter.Add("user_id", userExistsForPlots.Id);
+						var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
+						_filter.Remove("user_id");
+						if (userSettingsExists != null)
+						{
+							var newSettings = userSettingsExists;
+							newSettings.Function = plots; // сохраняем сюжет
+							await _supabaseService.UpdateDataAsync(newSettings.Id, newSettings);
+						}
+						else
+						{
+							var newSettings = new UserSettings
+							{
+								UserId = userExistsForPlots.Id,
+								Themes = string.Empty,
+								Function = plots,
+								TimeToSend = string.Empty
+							};
+							await _supabaseService.AddDataAsync(newSettings);
+						}
+					}
+					break;
+
+				default:
+					response = "Unknown input.";
+					break;
+			}
+
+			await _telegramBotClient.SendMessage(msg.Chat.Id, response);
+		}
+		else
+		{
+			if (msg.Text is not { } messageText)
+				return;
+
+			Message sentMessage = await (messageText.Split(' ')[0] switch
+			{
+				"/photo" => SendPhoto(msg),
+				"/text" => SendText(msg),
+				"/start" => SendWelcomeText(msg),
+
+				_ => Usage(msg)
+			});
+			_logger.LogInformation("{LogTag} The message was sent with id: {SentMessageId}", _logTag, sentMessage.Id);
+		}
 	}
 
 	async Task<Message> Usage(Message msg)
@@ -74,27 +188,64 @@ public class TelegramUpdateHandlerService(
 		const string usage = """
 		                     <b><u>Bot menu</u></b>:
 		                     /photo          - send a photo
-		                     /inline_buttons - send inline buttons
-		                     /keyboard       - send keyboard buttons
-		                     /remove         - remove keyboard buttons
-		                     /request        - request location or contact
-		                     /inline_mode    - send inline-mode results list
-		                     /poll           - send a poll
-		                     /poll_anonymous - send an anonymous poll
-		                     /throw          - what happens if handler fails
+		                     /text           - send a generated text
+		                     /start          - set settings
 		                     """;
 		return await _telegramBotClient.SendMessage(msg.Chat, usage, parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove());
+	}
+
+	async Task<Message> SendWelcomeText(Message msg)
+	{
+		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.Typing);
+		string _welcomeText = $"Hello, {msg.Chat.FirstName}. I'm an everyday image generator bot!";
+
+		var exists = _filter.TryAdd("chat_id", msg.From.Id.ToString());
+		if (!exists)
+		{
+			_filter["chat_id"] = msg.From.Id.ToString();
+		}
+
+		var result = await _supabaseService.GetDataAsync<User>(_filter);
+
+		if (result != null)
+		{
+			_logger.LogInformation($"{_logTag} ChatId was found user active");
+		}
+		else
+		{
+			_logger.LogInformation($"{_logTag} ChatId was not found user creating");
+			var newUser = new User
+			{
+				ChatId = msg.Chat.Id.ToString()
+			};
+			await _supabaseService.AddDataAsync(newUser);
+		}
+		_filter.Remove("chat_id");
+		await _telegramBotClient.SendMessage(msg.Chat, _welcomeText, ParseMode.None);
+		return await SendReplyKeyboard(msg);
+	}
+
+	async Task<Message> SendReplyKeyboard(Message msg)
+	{
+		var inlineButtons = new InlineKeyboardMarkup()
+			.AddNewRow()
+				.AddButton("Set Time", "set_time")
+				.AddButton("Set 3 Themes", "set_themes")
+				.AddButton("Set 3 Plots", "set_plots")
+			.AddNewRow()
+				.AddButton("Expiration", "expire");
+		return await _telegramBotClient.SendMessage(msg.Chat, "Please set your preferences:", replyMarkup: inlineButtons);
 	}
 
 	async Task<Message> SendText(Message msg)
 	{
 		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.Typing);
-		var prompt = msg.Text;
+		var prompt = msg.Text.Split(' ', 2)[1];
 		var answer = await _huggingFace.SendPromptAsync<string>(prompt);
 		var textToSend = $"""
 		               {answer}
 		               
-		               <b>{prompt}</b>. <i>Source</i>: <a href='https://huggingface.co/google/flan-t5-large'>HuggingFace Flan T5 Large Model</a>
+		               <b>{prompt}</b>. <i>Source</i>: <a href='https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct'>HuggingFace Meta llama 3.2</a>
 		               """;
 
 
@@ -113,101 +264,48 @@ public class TelegramUpdateHandlerService(
 		return await _telegramBotClient.SendPhoto(msg.Chat, inputFile, caption, ParseMode.Html);
 	}
 
-	// Send inline keyboard. You can process responses in OnCallbackQuery handler
-	async Task<Message> SendInlineKeyboard(Message msg)
-	{
-		var inlineMarkup = new InlineKeyboardMarkup()
-			.AddNewRow("1.1", "1.2", "1.3")
-			.AddNewRow()
-			.AddButton("WithCallbackData", "CallbackData")
-			.AddButton(InlineKeyboardButton.WithUrl("WithUrl", "https://github.com/TelegramBots/Telegram.Bot"));
-		return await _telegramBotClient.SendMessage(msg.Chat, "Inline buttons:", replyMarkup: inlineMarkup);
-	}
-
-	async Task<Message> SendReplyKeyboard(Message msg)
-	{
-		var replyMarkup = new ReplyKeyboardMarkup(true)
-			.AddNewRow("1.1", "1.2", "1.3")
-			.AddNewRow().AddButton("2.1").AddButton("2.2");
-		return await _telegramBotClient.SendMessage(msg.Chat, "Keyboard buttons:", replyMarkup: replyMarkup);
-	}
-
-	async Task<Message> RemoveKeyboard(Message msg)
-	{
-		return await _telegramBotClient.SendMessage(msg.Chat, "Removing keyboard", replyMarkup: new ReplyKeyboardRemove());
-	}
-
-	async Task<Message> RequestContactAndLocation(Message msg)
-	{
-		var replyMarkup = new ReplyKeyboardMarkup(true)
-			.AddButton(KeyboardButton.WithRequestLocation("Location"))
-			.AddButton(KeyboardButton.WithRequestContact("Contact"));
-		return await _telegramBotClient.SendMessage(msg.Chat, "Who or Where are you?", replyMarkup: replyMarkup);
-	}
-
-	async Task<Message> StartInlineQuery(Message msg)
-	{
-		var button = InlineKeyboardButton.WithSwitchInlineQueryCurrentChat("Inline Mode");
-		return await _telegramBotClient.SendMessage(msg.Chat, "Press the button to start Inline Query\n\n" +
-		                                                      "(Make sure you enabled Inline Mode in @BotFather)", replyMarkup: new InlineKeyboardMarkup(button));
-	}
-
-	async Task<Message> SendPoll(Message msg)
-	{
-		return await _telegramBotClient.SendPoll(msg.Chat, "Question", _pollOptions, isAnonymous: false);
-	}
-
-	async Task<Message> SendAnonymousPoll(Message msg)
-	{
-		return await _telegramBotClient.SendPoll(chatId: msg.Chat, "Question", _pollOptions);
-	}
-
-	static Task<Message> FailingHandler(Message msg)
-	{
-		throw new NotImplementedException("FailingHandler");
-	}
-
-	// Process Inline Keyboard callback data
 	private async Task OnCallbackQuery(CallbackQuery callbackQuery)
 	{
 		_logger.LogInformation("Received inline keyboard callback from: {CallbackQueryId}", callbackQuery.Id);
-		await _telegramBotClient.AnswerCallbackQuery(callbackQuery.Id, $"Received {callbackQuery.Data}");
-		await _telegramBotClient.SendMessage(callbackQuery.Message!.Chat, $"Received {callbackQuery.Data}");
-	}
 
-	#region Inline Mode
+		string answer = string.Empty;
 
-	private async Task OnInlineQuery(InlineQuery inlineQuery)
-	{
-		_logger.LogInformation("Received inline query from: {InlineQueryFromId}", inlineQuery.From.Id);
+		switch (callbackQuery.Data)
+		{
+			case "set_time":
+				answer = $"""
+				          Write down time using the format HH:MM:SS+ZZ. +ZZ is GMT. (Moscow is +03:00)
+				          Ex: 13:45:30+03:00
+				          """;
+				_userStates[callbackQuery.From.Id] = "awaiting_time";
+				break;
+			case "set_themes":
+				answer = $"""
+				          Write down 3 themes separated by comma.
+				          Ex: cars, racing, football
+				          """;
+				_userStates[callbackQuery.From.Id] = "awaiting_themes";
+				break;
+			case "set_plots":
+				answer = $"""
+				          Write down 3 feelings or plots separated by comma.
+				          Ex: upbeating, amazing, mysterious
+				          """;
+				_userStates[callbackQuery.From.Id] = "awaiting_plots";
+				break;
+			case "expire":
+				string timeLeft = string.Empty;
+				answer = $"""
+				          Your plan will expire in {timeLeft}.
+				          """;
+				break;
 
-		InlineQueryResult[] results = [ // displayed result
-			new InlineQueryResultArticle("1", "Telegram.Bot", new InputTextMessageContent("hello")),
-			new InlineQueryResultArticle("2", "is the best", new InputTextMessageContent("world"))
-		];
-		await _telegramBotClient.AnswerInlineQuery(inlineQuery.Id, results, cacheTime: 0, isPersonal: true);
-	}
-
-	private async Task OnChosenInlineResult(ChosenInlineResult chosenInlineResult)
-	{
-		_logger.LogInformation("Received inline result: {ChosenInlineResultId}", chosenInlineResult.ResultId);
-		await _telegramBotClient.SendMessage(chosenInlineResult.From.Id, $"You chose result with Id: {chosenInlineResult.ResultId}");
-	}
-
-	#endregion
-
-	private Task OnPoll(Poll poll)
-	{
-		_logger.LogInformation("Received Poll info: {Question}", poll.Question);
-		return Task.CompletedTask;
-	}
-
-	private async Task OnPollAnswer(PollAnswer pollAnswer)
-	{
-		var answer = pollAnswer.OptionIds.FirstOrDefault();
-		var selectedOption = _pollOptions[answer];
-		if (pollAnswer.User != null)
-			await _telegramBotClient.SendMessage(pollAnswer.User.Id, $"You've chosen: {selectedOption.Text} in poll");
+			default:
+				answer = "Unknown callback query";
+				break;
+		}
+		await _telegramBotClient.SendMessage(callbackQuery.Message!.Chat, answer);
+		
 	}
 
 	private Task UnknownUpdateHandlerAsync(Update update)
