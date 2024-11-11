@@ -14,7 +14,7 @@ public class UserSettings : BaseModel
 	public string CreatedAt { get; set; }
 
 	[Column("themes")]
-	public JsonElement Themes { get; set; }
+	public string Themes { get; set; }
 
 	[Column("function")]
 	public string Function { get; set; }

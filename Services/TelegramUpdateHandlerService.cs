@@ -1,3 +1,4 @@
+using ImageGeneratorTgBot.Models;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
@@ -58,6 +59,33 @@ public class TelegramUpdateHandlerService(
 						_userStates.Remove(msg.From.Id);
 
 						_logger.LogInformation("{LogTag} Parsed time: {Time}", _logTag, timeOffset);
+
+						_filter.Add("chat_id", msg.From.Id.ToString());
+						var userExists = await _supabaseService.GetDataAsync<User>(_filter);
+						_filter.Remove("chat_id");
+						if (userExists != null)
+						{
+							_filter.Add("user_id", userExists.Id);
+							var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
+							_filter.Remove("user_id");
+							if (userSettingsExists != null)
+							{
+								var newSettings = userSettingsExists;
+								newSettings.TimeToSend = timeOffset.ToString();
+								await _supabaseService.UpdateDataAsync(newSettings.Id, newSettings);
+							}
+							else
+							{
+								var newSettings = new UserSettings
+								{
+									UserId = userExists.Id,
+									TimeToSend = timeOffset.ToString(),
+									Themes = string.Empty,
+									Function = string.Empty
+								};
+								await _supabaseService.AddDataAsync(newSettings);
+							}
+						}
 					}
 					else
 					{
@@ -66,28 +94,68 @@ public class TelegramUpdateHandlerService(
 					break;
 
 				case "awaiting_themes":
-					var themes = msg.Text.Split(',');
-					if (themes.Length == 3)
+					var themes = msg.Text;
+					response = "Themes saved!";
+
+					_userStates.Remove(msg.From.Id);
+					_filter.Add("chat_id", msg.From.Id.ToString());
+					var userExistsForThemes = await _supabaseService.GetDataAsync<User>(_filter);
+					_filter.Remove("chat_id");
+					if (userExistsForThemes != null)
 					{
-						response = "Themes saved!";
-						_userStates.Remove(msg.From.Id);
-					}
-					else
-					{
-						response = "Please enter exactly 3 themes separated by commas.";
+						_filter.Add("user_id", userExistsForThemes.Id);
+						var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
+						_filter.Remove("user_id");
+						if (userSettingsExists != null)
+						{
+							var newSettings = userSettingsExists;
+							newSettings.Themes = themes;
+							await _supabaseService.UpdateDataAsync(newSettings.Id, newSettings);
+						}
+						else
+						{
+							var newSettings = new UserSettings
+							{
+								UserId = userExistsForThemes.Id,
+								Themes = themes,
+								TimeToSend = string.Empty,
+								Function = string.Empty
+							};
+							await _supabaseService.AddDataAsync(newSettings);
+						}
 					}
 					break;
 
 				case "awaiting_plots":
-					var plots = msg.Text.Split(',');
-					if (plots.Length == 3)
+					var plots = msg.Text;
+					response = "Plots saved!";
+					_userStates.Remove(msg.From.Id);
+
+					_filter.Add("chat_id", msg.From.Id.ToString());
+					var userExistsForPlots = await _supabaseService.GetDataAsync<User>(_filter);
+					_filter.Remove("chat_id");
+					if (userExistsForPlots != null)
 					{
-						response = "Saved!";
-						_userStates.Remove(msg.From.Id);
-					}
-					else
-					{
-						response = "Please enter exactly 3 feelings separated by commas.";
+						_filter.Add("user_id", userExistsForPlots.Id);
+						var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
+						_filter.Remove("user_id");
+						if (userSettingsExists != null)
+						{
+							var newSettings = userSettingsExists;
+							newSettings.Function = plots; // сохраняем сюжет
+							await _supabaseService.UpdateDataAsync(newSettings.Id, newSettings);
+						}
+						else
+						{
+							var newSettings = new UserSettings
+							{
+								UserId = userExistsForPlots.Id,
+								Themes = string.Empty,
+								Function = plots,
+								TimeToSend = string.Empty
+							};
+							await _supabaseService.AddDataAsync(newSettings);
+						}
 					}
 					break;
 
