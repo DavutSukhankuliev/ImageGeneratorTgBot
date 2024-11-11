@@ -1,6 +1,7 @@
 using ImageGeneratorTgBot.Configurations;
 using ImageGeneratorTgBot.Services;
 using Microsoft.Extensions.Options;
+using Supabase;
 using Telegram.Bot;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -22,6 +23,24 @@ builder.Services.AddHttpClient("TelegramWebhook")
 builder.Services.AddSingleton<TelegramUpdateHandlerService>();
 builder.Services.AddSingleton<TelegramWebhookSetupService>();
 builder.Services.ConfigureTelegramBotMvc();
+
+builder.Services.Configure<SupabaseConfiguration>(
+	builder.Configuration.GetSection("SupabaseConfiguration"));
+
+builder.Services.AddSingleton(provider =>
+{
+	var config = provider.GetRequiredService<IOptions<SupabaseConfiguration>>().Value;
+	var options = new SupabaseOptions
+	{
+		AutoRefreshToken = true,
+		AutoConnectRealtime = true,
+		// SessionHandler = new SupabaseSessionHandler() 
+	};
+
+	return new Client(config.BaseUrl.AbsoluteUri, config.AuthToken, options);
+});
+
+builder.Services.AddSingleton<SupabaseService>();
 
 builder.Services.Configure<HuggingFaceConfiguration>(
 	builder.Configuration.GetSection("HuggingFaceConfiguration"));
