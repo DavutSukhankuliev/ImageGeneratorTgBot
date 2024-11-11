@@ -3,17 +3,21 @@ using Telegram.Bot.Exceptions;
 using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
-using Telegram.Bot.Types.InlineQueryResults;
 using Telegram.Bot.Types.ReplyMarkups;
+using User = ImageGeneratorTgBot.Models.User;
 
 namespace ImageGeneratorTgBot.Services;
 
 public class TelegramUpdateHandlerService(
 	ILogger<TelegramUpdateHandlerService> _logger,
 	ITelegramBotClient _telegramBotClient,
-	HuggingFaceService _huggingFace) : IUpdateHandler
+	HuggingFaceService _huggingFace,
+	SupabaseService _supabaseService) : IUpdateHandler
 {
 	private const string _logTag = $"[{nameof(TelegramUpdateHandlerService)}]";
+
+	private readonly Dictionary<long, string> _userStates = new();
+	private readonly Dictionary<string, object> _filter = new();
 
 	public async Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, HandleErrorSource source, CancellationToken cancellationToken)
 	{
@@ -29,7 +33,6 @@ public class TelegramUpdateHandlerService(
 		await (update switch
 		{
 			{ Message: { } message }                        => OnMessage(message),
-			{ EditedMessage: { } message }                  => OnMessage(message),
 			{ CallbackQuery: { } callbackQuery }            => OnCallbackQuery(callbackQuery),
 
 			_                                               => UnknownUpdateHandlerAsync(update)
@@ -39,17 +42,77 @@ public class TelegramUpdateHandlerService(
 	private async Task OnMessage(Message msg)
 	{
 		_logger.LogInformation("{LogTag} Receive message type: {MessageType}", _logTag, msg.Type);
-		if (msg.Text is not { } messageText)
-			return;
 
-		Message sentMessage = await (messageText.Split(' ')[0] switch
+		if (_userStates.TryGetValue(msg.From.Id, out string? state))
 		{
-			"/photo" => SendPhoto(msg),
-			"/text" => SendText(msg),
+			string response;
 
-			_ => Usage(msg)
-		});
-		_logger.LogInformation("{LogTag} The message was sent with id: {SentMessageId}", _logTag, sentMessage.Id);
+			_logger.LogInformation("{LogTag} Receive message: {MessageType}", _logTag, msg.Text);
+
+			switch (state)
+			{
+				case "awaiting_time":
+					if (DateTimeOffset.TryParse(msg.Text, out var timeOffset))
+					{
+						response = "Time saved!";
+						_userStates.Remove(msg.From.Id);
+
+						_logger.LogInformation("{LogTag} Parsed time: {Time}", _logTag, timeOffset);
+					}
+					else
+					{
+						response = "Invalid time format. Please use the format HH:MM:SS+ZZ";
+					}
+					break;
+
+				case "awaiting_themes":
+					var themes = msg.Text.Split(',');
+					if (themes.Length == 3)
+					{
+						response = "Themes saved!";
+						_userStates.Remove(msg.From.Id);
+					}
+					else
+					{
+						response = "Please enter exactly 3 themes separated by commas.";
+					}
+					break;
+
+				case "awaiting_plots":
+					var plots = msg.Text.Split(',');
+					if (plots.Length == 3)
+					{
+						response = "Saved!";
+						_userStates.Remove(msg.From.Id);
+					}
+					else
+					{
+						response = "Please enter exactly 3 feelings separated by commas.";
+					}
+					break;
+
+				default:
+					response = "Unknown input.";
+					break;
+			}
+
+			await _telegramBotClient.SendMessage(msg.Chat.Id, response);
+		}
+		else
+		{
+			if (msg.Text is not { } messageText)
+				return;
+
+			Message sentMessage = await (messageText.Split(' ')[0] switch
+			{
+				"/photo" => SendPhoto(msg),
+				"/text" => SendText(msg),
+				"/start" => SendWelcomeText(msg),
+
+				_ => Usage(msg)
+			});
+			_logger.LogInformation("{LogTag} The message was sent with id: {SentMessageId}", _logTag, sentMessage.Id);
+		}
 	}
 
 	async Task<Message> Usage(Message msg)
@@ -58,8 +121,52 @@ public class TelegramUpdateHandlerService(
 		                     <b><u>Bot menu</u></b>:
 		                     /photo          - send a photo
 		                     /text           - send a generated text
+		                     /start          - set settings
 		                     """;
 		return await _telegramBotClient.SendMessage(msg.Chat, usage, parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove());
+	}
+
+	async Task<Message> SendWelcomeText(Message msg)
+	{
+		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.Typing);
+		string _welcomeText = $"Hello, {msg.Chat.FirstName}. I'm an everyday image generator bot!";
+
+		var exists = _filter.TryAdd("chat_id", msg.From.Id.ToString());
+		if (!exists)
+		{
+			_filter["chat_id"] = msg.From.Id.ToString();
+		}
+
+		var result = await _supabaseService.GetDataAsync<User>(_filter);
+
+		if (result != null)
+		{
+			_logger.LogInformation($"{_logTag} ChatId was found user active");
+		}
+		else
+		{
+			_logger.LogInformation($"{_logTag} ChatId was not found user creating");
+			var newUser = new User
+			{
+				ChatId = msg.Chat.Id.ToString()
+			};
+			await _supabaseService.AddDataAsync(newUser);
+		}
+		_filter.Remove("chat_id");
+		await _telegramBotClient.SendMessage(msg.Chat, _welcomeText, ParseMode.None);
+		return await SendReplyKeyboard(msg);
+	}
+
+	async Task<Message> SendReplyKeyboard(Message msg)
+	{
+		var inlineButtons = new InlineKeyboardMarkup()
+			.AddNewRow()
+				.AddButton("Set Time", "set_time")
+				.AddButton("Set 3 Themes", "set_themes")
+				.AddButton("Set 3 Plots", "set_plots")
+			.AddNewRow()
+				.AddButton("Expiration", "expire");
+		return await _telegramBotClient.SendMessage(msg.Chat, "Please set your preferences:", replyMarkup: inlineButtons);
 	}
 
 	async Task<Message> SendText(Message msg)
@@ -70,7 +177,7 @@ public class TelegramUpdateHandlerService(
 		var textToSend = $"""
 		               {answer}
 		               
-		               <b>{prompt}</b>. <i>Source</i>: <a href='https://huggingface.co/google/flan-t5-large'>HuggingFace Flan T5 Large Model</a>
+		               <b>{prompt}</b>. <i>Source</i>: <a href='https://huggingface.co/meta-llama/Llama-3.2-3B-Instruct'>HuggingFace Meta llama 3.2</a>
 		               """;
 
 
@@ -89,23 +196,48 @@ public class TelegramUpdateHandlerService(
 		return await _telegramBotClient.SendPhoto(msg.Chat, inputFile, caption, ParseMode.Html);
 	}
 
-	// Send inline keyboard. You can process responses in OnCallbackQuery handler
-	async Task<Message> SendInlineKeyboard(Message msg)
-	{
-		var inlineMarkup = new InlineKeyboardMarkup()
-			.AddNewRow("1.1", "1.2", "1.3")
-			.AddNewRow()
-			.AddButton("WithCallbackData", "CallbackData")
-			.AddButton(InlineKeyboardButton.WithUrl("WithUrl", "https://github.com/TelegramBots/Telegram.Bot"));
-		return await _telegramBotClient.SendMessage(msg.Chat, "Inline buttons:", replyMarkup: inlineMarkup);
-	}
-
-	// Process Inline Keyboard callback data
 	private async Task OnCallbackQuery(CallbackQuery callbackQuery)
 	{
 		_logger.LogInformation("Received inline keyboard callback from: {CallbackQueryId}", callbackQuery.Id);
-		await _telegramBotClient.AnswerCallbackQuery(callbackQuery.Id, $"Received {callbackQuery.Data}");
-		await _telegramBotClient.SendMessage(callbackQuery.Message!.Chat, $"Received {callbackQuery.Data}");
+
+		string answer = string.Empty;
+
+		switch (callbackQuery.Data)
+		{
+			case "set_time":
+				answer = $"""
+				          Write down time using the format HH:MM:SS+ZZ. +ZZ is GMT. (Moscow is +03:00)
+				          Ex: 13:45:30+03:00
+				          """;
+				_userStates[callbackQuery.From.Id] = "awaiting_time";
+				break;
+			case "set_themes":
+				answer = $"""
+				          Write down 3 themes separated by comma.
+				          Ex: cars, racing, football
+				          """;
+				_userStates[callbackQuery.From.Id] = "awaiting_themes";
+				break;
+			case "set_plots":
+				answer = $"""
+				          Write down 3 feelings or plots separated by comma.
+				          Ex: upbeating, amazing, mysterious
+				          """;
+				_userStates[callbackQuery.From.Id] = "awaiting_plots";
+				break;
+			case "expire":
+				string timeLeft = string.Empty;
+				answer = $"""
+				          Your plan will expire in {timeLeft}.
+				          """;
+				break;
+
+			default:
+				answer = "Unknown callback query";
+				break;
+		}
+		await _telegramBotClient.SendMessage(callbackQuery.Message!.Chat, answer);
+		
 	}
 
 	private Task UnknownUpdateHandlerAsync(Update update)
