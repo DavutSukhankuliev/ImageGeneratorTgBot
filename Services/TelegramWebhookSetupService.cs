@@ -1,6 +1,7 @@
 using ImageGeneratorTgBot.Configurations;
 using Microsoft.Extensions.Options;
 using Telegram.Bot;
+using Telegram.Bot.Types.Enums;
 
 namespace ImageGeneratorTgBot.Services;
 
@@ -16,7 +17,12 @@ public class TelegramWebhookSetupService(
 		try
 		{
 			var webhookUrl = _config.Value.BotWebhookUrl.AbsoluteUri;
-			await _botClient.SetWebhook(webhookUrl, allowedUpdates: [], secretToken: _config.Value.SecretToken,
+			await _botClient.SetWebhook(
+				webhookUrl, 
+				allowedUpdates: [
+					UpdateType.Message
+				],
+				secretToken: _config.Value.SecretToken,
 				cancellationToken: cancellationToken);
 
 			_logger.LogDebug("{LogTag} Webhook was set to {WebhookUrl}.", _logTag, webhookUrl);
