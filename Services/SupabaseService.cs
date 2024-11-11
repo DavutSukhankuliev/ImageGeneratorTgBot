@@ -61,7 +61,8 @@ public class SupabaseService(
 				.From<T>()
 				.Insert(new[] { data });
 
-			if (response.ResponseMessage.StatusCode == HttpStatusCode.Created)
+			if (response.ResponseMessage.StatusCode == HttpStatusCode.Created || 
+			    response.ResponseMessage.StatusCode == HttpStatusCode.OK)
 			{
 				_logger.LogInformation("{LogTag} Data successfully added to table {TableName}", _logTag, data.TableName);
 				return true;
@@ -85,12 +86,12 @@ public class SupabaseService(
 
 		try
 		{
-			var query = _client.From<T>();
+			var query = _client.From<T>().Select("*");
 
 			// Apply each filter condition
 			foreach (var filter in filters)
 			{
-				query = (ISupabaseTable<T, RealtimeChannel>)query.Filter(filter.Key, Constants.Operator.Equals, filter.Value);
+				query = query.Filter(filter.Key, Constants.Operator.Equals, filter.Value);
 			}
 
 			var response = await query.Get();
