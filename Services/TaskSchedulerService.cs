@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Globalization;
-using System.Text.RegularExpressions;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 
@@ -61,7 +60,7 @@ public class TaskSchedulerService(
 				TimeSpan delay = targetTime - now;
 				_logger.LogInformation($"{_logTag} Next scheduled task for chat {chatId} at {targetTime}");
 
-				await Task.Delay(delay, cancellationToken); // Поддержка отмены через токен
+				await Task.Delay(delay, cancellationToken);
 
 				if (cancellationToken.IsCancellationRequested)
 					break;
