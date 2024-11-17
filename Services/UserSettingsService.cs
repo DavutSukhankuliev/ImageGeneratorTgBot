@@ -4,7 +4,7 @@ namespace ImageGeneratorTgBot.Services;
 
 public class UserSettingsService
 {
-	public event Action<UserSettings>? SettingsUpdated;
+	public event Action<long, UserSettings>? SettingsUpdated;
 
 	private readonly Dictionary<string, object> _filter = new();
 
@@ -15,10 +15,10 @@ public class UserSettingsService
 		_supabaseService = supabaseService;
 	}
 
-	public async Task UpdateSettingsAsync(UserSettings settings)
+	public async Task UpdateSettingsAsync(long chatId, UserSettings settings)
 	{
 		await _supabaseService.UpdateDataAsync(settings.Id, settings);
-		SettingsUpdated?.Invoke(settings);
+		SettingsUpdated?.Invoke(chatId, settings);
 	}
 
 	public async Task<User?> GetUserAsync(long chatId)
@@ -40,16 +40,6 @@ public class UserSettingsService
 	public async Task<UserSettings> EnsureUserSettingsAsync(int userId)
 	{
 		var settings = await GetUserSettingsAsync(userId);
-		if (settings != null) return settings;
-
-		var newSettings = new UserSettings
-		{
-			UserId = userId,
-			TimeToSend = string.Empty,
-			Themes = string.Empty,
-			Function = string.Empty
-		};
-		await _supabaseService.AddDataAsync(newSettings);
-		return newSettings;
+		return settings;
 	}
 }

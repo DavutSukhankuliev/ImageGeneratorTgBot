@@ -13,5 +13,5 @@ public class User : BaseModel
 	public string CreatedAt { get; set; }
 
 	[Column("chat_id")]
-	public string ChatId { get; set; }
+	public long ChatId { get; set; }
 }

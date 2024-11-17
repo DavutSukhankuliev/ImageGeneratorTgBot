@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 
@@ -17,9 +18,9 @@ public class TaskSchedulerService(
 
 	private const string _logTag = $"[{nameof(TaskSchedulerService)}]";
 
-	private readonly ConcurrentDictionary<string, CancellationTokenSource> _scheduledTasks = new();
+	private readonly ConcurrentDictionary<long, CancellationTokenSource> _scheduledTasks = new();
 
-	public void CancelTask(string chatId)
+	public void CancelTask(long chatId)
 	{
 		if (_scheduledTasks.TryRemove(chatId, out var cts))
 		{
@@ -32,7 +33,7 @@ public class TaskSchedulerService(
 		}
 	}
 
-	public Task Schedule(string chatId, string timeString, string theme, string function)
+	public Task Schedule(long chatId, string timeString, string theme, string function)
 	{
 		if (_scheduledTasks.TryRemove(chatId, out var existingCts))
 			existingCts.Cancel();
@@ -45,7 +46,7 @@ public class TaskSchedulerService(
 		return Task.CompletedTask;
 	}
 
-	private async Task RunTask(string chatId, string timeString, string theme, string function, CancellationToken cancellationToken)
+	private async Task RunTask(long chatId, string timeString, string theme, string function, CancellationToken cancellationToken)
 	{
 		try
 		{
@@ -78,7 +79,7 @@ public class TaskSchedulerService(
 		}
 	}
 
-	private async Task ExecuteTask(string chatId, string theme, string function)
+	private async Task ExecuteTask(long chatId, string theme, string function)
 	{
 		try
 		{
@@ -114,30 +115,25 @@ public class TaskSchedulerService(
 
 	private DateTimeOffset ParseTime(string timeString)
 	{
+		if (string.IsNullOrWhiteSpace(timeString))
+		{
+			_logger.LogError($"{_logTag} Time string is null or empty.");
+			throw new FormatException("Time string is invalid: null or empty.");
+		}
+
 		try
 		{
-			if (!timeString.Contains(":"))
-				throw new FormatException("Invalid time format.");
+			_logger.LogInformation($"{_logTag} Attempting to parse time string: {timeString}");
 
-			if (timeString.Count(c => c == ':') == 1)
-				timeString += ":00";
+			var formats = new[] { "MM/dd/yyyy HH:mm:ss zzz", "HH:mm:sszzz" };
 
-			DateTimeOffset dateTimeOffset = DateTimeOffset.ParseExact(
-				timeString,
-				"HH:mm:sszzz",
-				CultureInfo.InvariantCulture);
+			if (DateTimeOffset.TryParseExact(timeString, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var result))
+			{
+				_logger.LogInformation($"{_logTag} Successfully parsed time: {result}");
+				return result;
+			}
 
-			DateTimeOffset nowUtc = DateTimeOffset.UtcNow;
-			DateTimeOffset targetDateTimeOffset = new DateTimeOffset(
-				nowUtc.Year, nowUtc.Month, nowUtc.Day,
-				dateTimeOffset.Hour, dateTimeOffset.Minute, dateTimeOffset.Second,
-				dateTimeOffset.Offset);
-
-			if (targetDateTimeOffset < nowUtc)
-				targetDateTimeOffset = targetDateTimeOffset.AddDays(1);
-
-			_logger.LogInformation($"{_logTag} Successfully parsed time: {targetDateTimeOffset}");
-			return targetDateTimeOffset;
+			throw new FormatException("Unsupported time format.");
 		}
 		catch (FormatException ex)
 		{

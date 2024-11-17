@@ -1,3 +1,4 @@
+using System.Globalization;
 using ImageGeneratorTgBot.Models;
 using Telegram.Bot;
 using Telegram.Bot.Exceptions;
@@ -119,7 +120,6 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		                     /photo          - send a photo
 		                     /text           - send a generated text
 		                     /start          - set settings
-		                     /refresh        - refresh User settings
 		                     """;
 		return await _telegramBotClient.SendMessage(msg.Chat, usage, parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove());
 	}
@@ -143,12 +143,30 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		}
 		else
 		{
-			_logger.LogInformation($"{_logTag} ChatId was not found user creating");
+			_logger.LogInformation($"{_logTag} ChatId was not found. New user creating...");
 			var newUser = new User
 			{
-				ChatId = msg.Chat.Id.ToString()
+				ChatId = msg.Chat.Id
 			};
 			await _supabaseService.AddDataAsync(newUser);
+
+			var user = await _supabaseService.GetDataAsync<User>(_filter);
+
+			var newUserSettings = new UserSettings
+			{
+				Themes = "none",
+				Function = "none",
+				UserId = user.Id,
+				TimeToSend = DateTimeOffset.UtcNow.ToString(CultureInfo.InvariantCulture),
+			};
+			await _supabaseService.AddDataAsync(newUserSettings);
+
+			var newSubscription = new Supscription
+			{
+				UserId = user.Id,
+				ExpirationDate = DateTimeOffset.Parse(user.CreatedAt).AddMonths(1).ToString("yyyy-MM-dd HH:mm:ss.fffzzz"),
+			};
+			await _supabaseService.AddDataAsync(newSubscription);
 		}
 		_filter.Remove("chat_id");
 		await _telegramBotClient.SendMessage(msg.Chat, _welcomeText, ParseMode.None);
@@ -194,7 +212,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		return await _telegramBotClient.SendPhoto(msg.Chat, inputFile, caption, ParseMode.Html);
 	}
 
-	private record UserRefreshData(string ChatId, string Time, string Themes, string Function);
+	private record UserRefreshData(long ChatId, string Time, string Themes, string Function);
 
 	private async Task<UserRefreshData?> GetUserRefreshDataAsync(long chatId)
 	{
@@ -306,17 +324,24 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		updateSettings(settings);
 		await _supabaseService.UpdateDataAsync(settings.Id, settings);
 
-		await _userSettingsService.UpdateSettingsAsync(settings);
+		await _userSettingsService.UpdateSettingsAsync(msg.From.Id, settings);
 
 		return "Settings saved!";
 	}
 
-	private void OnSettingsUpdated(UserSettings settings)
+	private void OnSettingsUpdated(long chatId, UserSettings settings)
 	{
 		_logger.LogInformation("Refreshing task for user: {UserId}", settings.UserId);
 
+		_logger.LogInformation($"UserId: {settings.UserId}" +
+		                       $"\r\n ChatId: {chatId}" +
+		                       $"\r\n {settings.TimeToSend}" +
+		                       $"\r\n {settings.Function}" +
+		                       $"\r\n {settings.CreatedAt}" +
+		                       $"\r\n {settings.Themes}");
+
 		_scheduler.Schedule(
-			settings.UserId.ToString(),
+			chatId,
 			settings.TimeToSend,
 			settings.Themes,
 			settings.Function
