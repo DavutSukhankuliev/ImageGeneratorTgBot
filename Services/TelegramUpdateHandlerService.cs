@@ -9,17 +9,48 @@ using User = ImageGeneratorTgBot.Models.User;
 
 namespace ImageGeneratorTgBot.Services;
 
-public class TelegramUpdateHandlerService(
-	ILogger<TelegramUpdateHandlerService> _logger,
-	ITelegramBotClient _telegramBotClient,
-	HuggingFaceService _huggingFace,
-	SupabaseService _supabaseService,
-	TaskSchedulerService _scheduler) : IUpdateHandler
+public class TelegramUpdateHandlerService : IUpdateHandler
 {
 	private const string _logTag = $"[{nameof(TelegramUpdateHandlerService)}]";
 
 	private readonly Dictionary<long, string> _userStates = new();
 	private readonly Dictionary<string, object> _filter = new();
+	private readonly Dictionary<string, Func<Message, Task<string>>> _stateHandlers;
+	private readonly Dictionary<string, Func<Message, Task<Message>>> _commandHandlers;
+
+	private readonly ILogger<TelegramUpdateHandlerService> _logger;
+	private readonly ITelegramBotClient _telegramBotClient;
+	private readonly HuggingFaceService _huggingFace;
+	private readonly SupabaseService _supabaseService;
+	private readonly TaskSchedulerService _scheduler;
+
+	public TelegramUpdateHandlerService(ILogger<TelegramUpdateHandlerService> logger,
+		ITelegramBotClient telegramBotClient,
+		HuggingFaceService huggingFace,
+		SupabaseService supabaseService,
+		TaskSchedulerService scheduler)
+	{
+		_logger = logger;
+		_telegramBotClient = telegramBotClient;
+		_huggingFace = huggingFace;
+		_supabaseService = supabaseService;
+		_scheduler = scheduler;
+
+		_stateHandlers = new Dictionary<string, Func<Message, Task<string>>>
+		{
+			["awaiting_time"] = HandleAwaitingTimeAsync,
+			["awaiting_themes"] = HandleAwaitingThemeAsync,
+			["awaiting_plots"] = HandleAwaitingFunctionAsync
+		};
+
+		_commandHandlers = new Dictionary<string, Func<Message, Task<Message>>>
+		{
+			["/photo"] = SendPhoto,
+			["/text"] = SendText,
+			["/start"] = SendWelcomeText,
+			["/refresh"] = Refresh,
+		};
+	}
 
 	public async Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, HandleErrorSource source, CancellationToken cancellationToken)
 	{
@@ -45,143 +76,34 @@ public class TelegramUpdateHandlerService(
 	{
 		_logger.LogInformation("{LogTag} Receive message type: {MessageType}", _logTag, msg.Type);
 
-		if (_userStates.TryGetValue(msg.From.Id, out string? state))
+		if (_userStates.TryGetValue(msg.From.Id, out var state) 
+		    && _stateHandlers.TryGetValue(state, out var handler))
 		{
-			string response;
-
-			_logger.LogInformation("{LogTag} Receive message: {MessageType}", _logTag, msg.Text);
-
-			switch (state)
+			try
 			{
-				case "awaiting_time":
-					if (DateTimeOffset.TryParse(msg.Text, out var timeOffset))
-					{
-						response = "Time saved!";
-						_userStates.Remove(msg.From.Id);
-
-						_logger.LogInformation("{LogTag} Parsed time: {Time}", _logTag, timeOffset);
-
-						_filter.Add("chat_id", msg.From.Id.ToString());
-						var userExists = await _supabaseService.GetDataAsync<User>(_filter);
-						_filter.Remove("chat_id");
-						if (userExists != null)
-						{
-							_filter.Add("user_id", userExists.Id);
-							var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
-							_filter.Remove("user_id");
-							if (userSettingsExists != null)
-							{
-								var newSettings = userSettingsExists;
-								newSettings.TimeToSend = timeOffset.ToString();
-								await _supabaseService.UpdateDataAsync(newSettings.Id, newSettings);
-							}
-							else
-							{
-								var newSettings = new UserSettings
-								{
-									UserId = userExists.Id,
-									TimeToSend = timeOffset.ToString(),
-									Themes = string.Empty,
-									Function = string.Empty
-								};
-								await _supabaseService.AddDataAsync(newSettings);
-							}
-						}
-					}
-					else
-					{
-						response = "Invalid time format. Please use the format HH:MM:SS+ZZ";
-					}
-					break;
-
-				case "awaiting_themes":
-					var themes = msg.Text;
-					response = "Theme saved!";
-
-					_userStates.Remove(msg.From.Id);
-					_filter.Add("chat_id", msg.From.Id.ToString());
-					var userExistsForThemes = await _supabaseService.GetDataAsync<User>(_filter);
-					_filter.Remove("chat_id");
-					if (userExistsForThemes != null)
-					{
-						_filter.Add("user_id", userExistsForThemes.Id);
-						var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
-						_filter.Remove("user_id");
-						if (userSettingsExists != null)
-						{
-							var newSettings = userSettingsExists;
-							newSettings.Themes = themes;
-							await _supabaseService.UpdateDataAsync(newSettings.Id, newSettings);
-						}
-						else
-						{
-							var newSettings = new UserSettings
-							{
-								UserId = userExistsForThemes.Id,
-								Themes = themes,
-								TimeToSend = string.Empty,
-								Function = string.Empty
-							};
-							await _supabaseService.AddDataAsync(newSettings);
-						}
-					}
-					break;
-
-				case "awaiting_plots":
-					var plots = msg.Text;
-					response = "Plot saved!";
-					_userStates.Remove(msg.From.Id);
-
-					_filter.Add("chat_id", msg.From.Id.ToString());
-					var userExistsForPlots = await _supabaseService.GetDataAsync<User>(_filter);
-					_filter.Remove("chat_id");
-					if (userExistsForPlots != null)
-					{
-						_filter.Add("user_id", userExistsForPlots.Id);
-						var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
-						_filter.Remove("user_id");
-						if (userSettingsExists != null)
-						{
-							var newSettings = userSettingsExists;
-							newSettings.Function = plots; // сохраняем сюжет
-							await _supabaseService.UpdateDataAsync(newSettings.Id, newSettings);
-						}
-						else
-						{
-							var newSettings = new UserSettings
-							{
-								UserId = userExistsForPlots.Id,
-								Themes = string.Empty,
-								Function = plots,
-								TimeToSend = string.Empty
-							};
-							await _supabaseService.AddDataAsync(newSettings);
-						}
-					}
-					break;
-
-				default:
-					response = "Unknown input.";
-					break;
+				var response = await handler(msg);
+				await _telegramBotClient.SendMessage(msg.Chat.Id, response);
 			}
-
-			await _telegramBotClient.SendMessage(msg.Chat.Id, response);
+			catch (Exception ex)
+			{
+				_logger.LogError("{LogTag} Error handling state: {Exception}", _logTag, ex);
+				await _telegramBotClient.SendMessage(msg.Chat.Id, "An error occurred. Please try again later.");
+			}
 		}
 		else
 		{
 			if (msg.Text is not { } messageText)
 				return;
 
-			Message sentMessage = await (messageText.Split(' ')[0] switch
+			if (_commandHandlers.TryGetValue(messageText.Split(' ')[0], out var commandHandler))
 			{
-				"/photo" => SendPhoto(msg),
-				"/text" => SendText(msg),
-				"/start" => SendWelcomeText(msg),
-				"/refresh" => Refresh(msg),
-
-				_ => Usage(msg)
-			});
-			_logger.LogInformation("{LogTag} The message was sent with id: {SentMessageId}", _logTag, sentMessage.Id);
+				var sentMessage = await commandHandler(msg);
+				_logger.LogInformation("{LogTag} The message was sent with id: {SentMessageId}", _logTag, sentMessage.Id);
+			}
+			else
+			{
+				await Usage(msg);
+			}
 		}
 	}
 
@@ -346,4 +268,73 @@ public class TelegramUpdateHandlerService(
 		_logger.LogInformation("Unknown update type: {UpdateType}", update.Type);
 		return Task.CompletedTask;
 	}
+
+	private async Task<User?> GetUserByChatIdAsync(long chatId)
+	{
+		_filter["chat_id"] = chatId.ToString();
+		var user = await _supabaseService.GetDataAsync<User>(_filter);
+		_filter.Remove("chat_id");
+		return user;
+	}
+
+	private async Task<UserSettings?> GetUserSettingsAsync(int userId)
+	{
+		_filter["user_id"] = userId;
+		var settings = await _supabaseService.GetDataAsync<UserSettings>(_filter);
+		_filter.Remove("user_id");
+		return settings;
+	}
+
+	private async Task<UserSettings> EnsureUserSettingsAsync(int userId)
+	{
+		var settings = await GetUserSettingsAsync(userId);
+		if (settings != null) return settings;
+
+		var newSettings = new UserSettings
+		{
+			UserId = userId,
+			TimeToSend = string.Empty,
+			Themes = string.Empty,
+			Function = string.Empty
+		};
+		await _supabaseService.AddDataAsync(newSettings);
+		return newSettings;
+	}
+
+	private async Task<string> HandleAwaitingTimeAsync(Message msg)
+	{
+		if (!DateTimeOffset.TryParse(msg.Text, out var timeOffset))
+			return "Invalid time format. Please use the format HH:MM:SS+ZZ";
+
+		return await HandleUserSettingsAsync(msg, settings => settings.TimeToSend = timeOffset.ToString());
+	}
+
+	private async Task<string> HandleAwaitingThemeAsync(Message msg)
+	{
+		var theme = msg.Text;
+		return await HandleUserSettingsAsync(msg, settings => settings.Themes = theme);
+	}
+
+	private async Task<string> HandleAwaitingFunctionAsync(Message msg)
+	{
+		var function = msg.Text;
+		return await HandleUserSettingsAsync(msg, settings => settings.Function = function);
+	}
+
+
+	private async Task<string> HandleUserSettingsAsync(Message msg, Action<UserSettings> updateSettings)
+	{
+		_userStates.Remove(msg.From.Id);
+
+		var user = await GetUserByChatIdAsync(msg.From.Id);
+		if (user == null)
+			return "User not found!";
+
+		var settings = await EnsureUserSettingsAsync(user.Id);
+		updateSettings(settings);
+		await _supabaseService.UpdateDataAsync(settings.Id, settings);
+
+		return "Settings saved!";
+	}
+
 }
