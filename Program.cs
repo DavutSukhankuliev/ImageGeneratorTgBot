@@ -57,6 +57,8 @@ builder.Services.AddHttpClient<HuggingFaceService>("HuggingFaceService", (servic
 
 builder.Services.AddSingleton<HuggingFaceChatAdapter>();
 
+builder.Services.AddSingleton<TaskSchedulerService>();
+
 builder.Services.AddControllers();
 
 var app = builder.Build();

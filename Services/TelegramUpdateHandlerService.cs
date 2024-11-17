@@ -13,7 +13,8 @@ public class TelegramUpdateHandlerService(
 	ILogger<TelegramUpdateHandlerService> _logger,
 	ITelegramBotClient _telegramBotClient,
 	HuggingFaceService _huggingFace,
-	SupabaseService _supabaseService) : IUpdateHandler
+	SupabaseService _supabaseService,
+	TaskSchedulerService _scheduler) : IUpdateHandler
 {
 	private const string _logTag = $"[{nameof(TelegramUpdateHandlerService)}]";
 
@@ -95,7 +96,7 @@ public class TelegramUpdateHandlerService(
 
 				case "awaiting_themes":
 					var themes = msg.Text;
-					response = "Themes saved!";
+					response = "Theme saved!";
 
 					_userStates.Remove(msg.From.Id);
 					_filter.Add("chat_id", msg.From.Id.ToString());
@@ -128,7 +129,7 @@ public class TelegramUpdateHandlerService(
 
 				case "awaiting_plots":
 					var plots = msg.Text;
-					response = "Plots saved!";
+					response = "Plot saved!";
 					_userStates.Remove(msg.From.Id);
 
 					_filter.Add("chat_id", msg.From.Id.ToString());
@@ -176,6 +177,7 @@ public class TelegramUpdateHandlerService(
 				"/photo" => SendPhoto(msg),
 				"/text" => SendText(msg),
 				"/start" => SendWelcomeText(msg),
+				"/refresh" => Refresh(msg),
 
 				_ => Usage(msg)
 			});
@@ -190,6 +192,7 @@ public class TelegramUpdateHandlerService(
 		                     /photo          - send a photo
 		                     /text           - send a generated text
 		                     /start          - set settings
+		                     /refresh        - refresh User settings
 		                     """;
 		return await _telegramBotClient.SendMessage(msg.Chat, usage, parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove());
 	}
@@ -262,6 +265,36 @@ public class TelegramUpdateHandlerService(
 		var caption = $"<b>{prompt}</b>. <i>Source</i>: <a href='https://huggingface.co/stabilityai/stable-diffusion-3.5-large'>HuggingFace StableDiffusion Model</a>";
 
 		return await _telegramBotClient.SendPhoto(msg.Chat, inputFile, caption, ParseMode.Html);
+	}
+
+	async Task<Message> Refresh(Message msg)
+	{
+		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.Typing);
+
+		string theme = string.Empty;
+		string function = string.Empty;
+		string time = string.Empty;
+		string chatId =string.Empty;
+
+		_filter.Add("chat_id", msg.From.Id.ToString());
+		var userExists = await _supabaseService.GetDataAsync<User>(_filter);
+		_filter.Remove("chat_id");
+		if (userExists != null)
+		{
+			_filter.Add("user_id", userExists.Id);
+			var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
+			_filter.Remove("user_id");
+			if (userSettingsExists != null)
+			{
+				theme = userSettingsExists.Themes;
+				function = userSettingsExists.Function;
+				time = userSettingsExists.TimeToSend;
+				chatId = userExists.ChatId;
+			}
+		}
+
+		_ = _scheduler.Schedule(chatId, time, theme, function);
+		return await _telegramBotClient.SendMessage(msg.Chat, "Refreshed");
 	}
 
 	private async Task OnCallbackQuery(CallbackQuery callbackQuery)
