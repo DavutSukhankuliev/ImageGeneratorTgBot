@@ -107,7 +107,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		}
 	}
 
-	async Task<Message> Usage(Message msg)
+	private async Task<Message> Usage(Message msg)
 	{
 		const string usage = """
 		                     <b><u>Bot menu</u></b>:
@@ -119,7 +119,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		return await _telegramBotClient.SendMessage(msg.Chat, usage, parseMode: ParseMode.Html, replyMarkup: new ReplyKeyboardRemove());
 	}
 
-	async Task<Message> SendWelcomeText(Message msg)
+	private async Task<Message> SendWelcomeText(Message msg)
 	{
 		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.Typing);
 		string _welcomeText = $"Hello, {msg.Chat.FirstName}. I'm an everyday image generator bot!";
@@ -150,7 +150,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		return await SendReplyKeyboard(msg);
 	}
 
-	async Task<Message> SendReplyKeyboard(Message msg)
+	private async Task<Message> SendReplyKeyboard(Message msg)
 	{
 		var inlineButtons = new InlineKeyboardMarkup()
 			.AddNewRow()
@@ -162,7 +162,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		return await _telegramBotClient.SendMessage(msg.Chat, "Please set your preferences:", replyMarkup: inlineButtons);
 	}
 
-	async Task<Message> SendText(Message msg)
+	private async Task<Message> SendText(Message msg)
 	{
 		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.Typing);
 		var prompt = msg.Text.Split(' ', 2)[1];
@@ -177,7 +177,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		return await _telegramBotClient.SendMessage(msg.Chat, textToSend, ParseMode.Html);
 	}
 
-	async Task<Message> SendPhoto(Message msg)
+	private async Task<Message> SendPhoto(Message msg)
 	{
 		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.UploadPhoto);
 		var prompt = msg.Text.Split(' ', 2)[1];
@@ -189,33 +189,32 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		return await _telegramBotClient.SendPhoto(msg.Chat, inputFile, caption, ParseMode.Html);
 	}
 
-	async Task<Message> Refresh(Message msg)
+	private record UserRefreshData(string ChatId, string Time, string Themes, string Function);
+
+	private async Task<UserRefreshData?> GetUserRefreshDataAsync(long chatId)
+	{
+		var user = await GetUserAsync(chatId);
+		if (user == null)
+			return null;
+
+		var settings = await GetUserSettingsAsync(user.Id);
+		return settings != null 
+			? new UserRefreshData(user.ChatId, settings.TimeToSend, settings.Themes, settings.Function) 
+			: null;
+	}
+
+	private async Task<Message> Refresh(Message msg)
 	{
 		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.Typing);
 
-		string theme = string.Empty;
-		string function = string.Empty;
-		string time = string.Empty;
-		string chatId =string.Empty;
-
-		_filter.Add("chat_id", msg.From.Id.ToString());
-		var userExists = await _supabaseService.GetDataAsync<User>(_filter);
-		_filter.Remove("chat_id");
-		if (userExists != null)
+		var refreshData = await GetUserRefreshDataAsync(msg.From.Id);
+		if (refreshData == null)
 		{
-			_filter.Add("user_id", userExists.Id);
-			var userSettingsExists = await _supabaseService.GetDataAsync<UserSettings>(_filter);
-			_filter.Remove("user_id");
-			if (userSettingsExists != null)
-			{
-				theme = userSettingsExists.Themes;
-				function = userSettingsExists.Function;
-				time = userSettingsExists.TimeToSend;
-				chatId = userExists.ChatId;
-			}
+			return await _telegramBotClient.SendMessage(msg.Chat, "User or settings not found. Please configure your settings first.");
 		}
 
-		_ = _scheduler.Schedule(chatId, time, theme, function);
+		_ = _scheduler.Schedule(refreshData.ChatId, refreshData.Time, refreshData.Themes, refreshData.Function);
+
 		return await _telegramBotClient.SendMessage(msg.Chat, "Refreshed");
 	}
 
@@ -269,7 +268,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		return Task.CompletedTask;
 	}
 
-	private async Task<User?> GetUserByChatIdAsync(long chatId)
+	private async Task<User?> GetUserAsync(long chatId)
 	{
 		_filter["chat_id"] = chatId.ToString();
 		var user = await _supabaseService.GetDataAsync<User>(_filter);
@@ -326,7 +325,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 	{
 		_userStates.Remove(msg.From.Id);
 
-		var user = await GetUserByChatIdAsync(msg.From.Id);
+		var user = await GetUserAsync(msg.From.Id);
 		if (user == null)
 			return "User not found!";
 
