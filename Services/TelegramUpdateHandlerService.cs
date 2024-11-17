@@ -23,18 +23,21 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 	private readonly HuggingFaceService _huggingFace;
 	private readonly SupabaseService _supabaseService;
 	private readonly TaskSchedulerService _scheduler;
+	private readonly UserSettingsService _userSettingsService;
 
 	public TelegramUpdateHandlerService(ILogger<TelegramUpdateHandlerService> logger,
 		ITelegramBotClient telegramBotClient,
 		HuggingFaceService huggingFace,
 		SupabaseService supabaseService,
-		TaskSchedulerService scheduler)
+		TaskSchedulerService scheduler,
+		UserSettingsService userSettingsService)
 	{
 		_logger = logger;
 		_telegramBotClient = telegramBotClient;
 		_huggingFace = huggingFace;
 		_supabaseService = supabaseService;
 		_scheduler = scheduler;
+		_userSettingsService = userSettingsService;
 
 		_stateHandlers = new Dictionary<string, Func<Message, Task<string>>>
 		{
@@ -50,6 +53,8 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 			["/start"] = SendWelcomeText,
 			["/refresh"] = Refresh,
 		};
+
+		_userSettingsService.SettingsUpdated += OnSettingsUpdated;
 	}
 
 	public async Task HandleErrorAsync(ITelegramBotClient botClient, Exception exception, HandleErrorSource source, CancellationToken cancellationToken)
@@ -193,11 +198,11 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 
 	private async Task<UserRefreshData?> GetUserRefreshDataAsync(long chatId)
 	{
-		var user = await GetUserAsync(chatId);
+		var user = await _userSettingsService.GetUserAsync(chatId);
 		if (user == null)
 			return null;
 
-		var settings = await GetUserSettingsAsync(user.Id);
+		var settings = await _userSettingsService.GetUserSettingsAsync(user.Id);
 		return settings != null 
 			? new UserRefreshData(user.ChatId, settings.TimeToSend, settings.Themes, settings.Function) 
 			: null;
@@ -268,38 +273,6 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		return Task.CompletedTask;
 	}
 
-	private async Task<User?> GetUserAsync(long chatId)
-	{
-		_filter["chat_id"] = chatId.ToString();
-		var user = await _supabaseService.GetDataAsync<User>(_filter);
-		_filter.Remove("chat_id");
-		return user;
-	}
-
-	private async Task<UserSettings?> GetUserSettingsAsync(int userId)
-	{
-		_filter["user_id"] = userId;
-		var settings = await _supabaseService.GetDataAsync<UserSettings>(_filter);
-		_filter.Remove("user_id");
-		return settings;
-	}
-
-	private async Task<UserSettings> EnsureUserSettingsAsync(int userId)
-	{
-		var settings = await GetUserSettingsAsync(userId);
-		if (settings != null) return settings;
-
-		var newSettings = new UserSettings
-		{
-			UserId = userId,
-			TimeToSend = string.Empty,
-			Themes = string.Empty,
-			Function = string.Empty
-		};
-		await _supabaseService.AddDataAsync(newSettings);
-		return newSettings;
-	}
-
 	private async Task<string> HandleAwaitingTimeAsync(Message msg)
 	{
 		if (!DateTimeOffset.TryParse(msg.Text, out var timeOffset))
@@ -325,15 +298,28 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 	{
 		_userStates.Remove(msg.From.Id);
 
-		var user = await GetUserAsync(msg.From.Id);
+		var user = await _userSettingsService.GetUserAsync(msg.From.Id);
 		if (user == null)
 			return "User not found!";
 
-		var settings = await EnsureUserSettingsAsync(user.Id);
+		var settings = await _userSettingsService.EnsureUserSettingsAsync(user.Id);
 		updateSettings(settings);
 		await _supabaseService.UpdateDataAsync(settings.Id, settings);
+
+		await _userSettingsService.UpdateSettingsAsync(settings);
 
 		return "Settings saved!";
 	}
 
+	private void OnSettingsUpdated(UserSettings settings)
+	{
+		_logger.LogInformation("Refreshing task for user: {UserId}", settings.UserId);
+
+		_scheduler.Schedule(
+			settings.UserId.ToString(),
+			settings.TimeToSend,
+			settings.Themes,
+			settings.Function
+		);
+	}
 }

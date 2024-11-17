@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using Telegram.Bot;
 using Telegram.Bot.Types;
@@ -16,43 +17,85 @@ public class TaskSchedulerService(
 
 	private const string _logTag = $"[{nameof(TaskSchedulerService)}]";
 
+	private readonly ConcurrentDictionary<string, CancellationTokenSource> _scheduledTasks = new();
+
+	public void CancelTask(string chatId)
+	{
+		if (_scheduledTasks.TryRemove(chatId, out var cts))
+		{
+			cts.Cancel();
+			_logger.LogInformation($"{_logTag} Task for chat {chatId} has been canceled.");
+		}
+		else
+		{
+			_logger.LogWarning($"{_logTag} No task found for chat {chatId} to cancel.");
+		}
+	}
+
 	public Task Schedule(string chatId, string timeString, string theme, string function)
 	{
-		DateTimeOffset targetDateTimeOffset = ParseTime(timeString);
+		if (_scheduledTasks.TryRemove(chatId, out var existingCts))
+			existingCts.Cancel();
 
-		Task.Run(async () =>
+		var cts = new CancellationTokenSource();
+		_scheduledTasks[chatId] = cts;
+
+		Task.Run(() => RunTask(chatId, timeString, theme, function, cts.Token), cts.Token);
+
+		return Task.CompletedTask;
+	}
+
+	private async Task RunTask(string chatId, string timeString, string theme, string function, CancellationToken cancellationToken)
+	{
+		try
 		{
-			while (true)
+			while (!cancellationToken.IsCancellationRequested)
 			{
 				DateTimeOffset now = DateTimeOffset.UtcNow;
-				DateTimeOffset targetTime = targetDateTimeOffset;
+				DateTimeOffset targetTime = ParseTime(timeString);
 
 				if (targetTime <= now)
-				{
 					targetTime = targetTime.AddDays(1);
-				}
 
 				TimeSpan delay = targetTime - now;
 				_logger.LogInformation($"{_logTag} Next scheduled task for chat {chatId} at {targetTime}");
 
-				await Task.Delay(delay);
-				try
-				{
-					_logger.LogInformation($"{_logTag} Executing scheduled task for chat {chatId}");
+				await Task.Delay(delay, cancellationToken); // Поддержка отмены через токен
 
-					var imageBytes = await HandleModel(theme, function);
-					using var stream = new MemoryStream(imageBytes);
-					var inputFile = new InputFileStream(stream, "photo.jpg");
-					return await _telegramBotClient.SendPhoto(chatId, inputFile);
-				}
-				catch (Exception ex)
-				{
-					_logger.LogError(ex, $"{_logTag} Error executing daily task for chat {chatId}");
-				}
+				if (cancellationToken.IsCancellationRequested)
+					break;
+
+				await ExecuteTask(chatId, theme, function);
 			}
-		});
+		}
+		catch (TaskCanceledException)
+		{
+			_logger.LogInformation($"{_logTag} Task for chat {chatId} was cancelled.");
+		}
+		catch (Exception ex)
+		{
+			_logger.LogError(ex, $"{_logTag} Error in scheduled task for chat {chatId}");
+		}
+	}
 
-		return Task.CompletedTask;
+	private async Task ExecuteTask(string chatId, string theme, string function)
+	{
+		try
+		{
+			_logger.LogInformation($"{_logTag} Executing scheduled task for chat {chatId}");
+
+			var imageBytes = await HandleModel(theme, function);
+			using var stream = new MemoryStream(imageBytes);
+			var inputFile = new InputFileStream(stream, "photo.jpg");
+
+			await _telegramBotClient.SendPhoto(chatId, inputFile);
+
+			_logger.LogInformation($"{_logTag} Task for chat {chatId} executed successfully.");
+		}
+		catch (Exception ex)
+		{
+			_logger.LogError(ex, $"{_logTag} Error executing task for chat {chatId}");
+		}
 	}
 
 	private async Task<byte[]> HandleModel(string theme, string function)
@@ -73,10 +116,11 @@ public class TaskSchedulerService(
 	{
 		try
 		{
-			if (!timeString.EndsWith(":00"))
-			{
-				timeString += ":00"; // Workaround: add seconds to supabase time zone format
-			}
+			if (!timeString.Contains(":"))
+				throw new FormatException("Invalid time format.");
+
+			if (timeString.Count(c => c == ':') == 1)
+				timeString += ":00";
 
 			DateTimeOffset dateTimeOffset = DateTimeOffset.ParseExact(
 				timeString,
@@ -90,9 +134,7 @@ public class TaskSchedulerService(
 				dateTimeOffset.Offset);
 
 			if (targetDateTimeOffset < nowUtc)
-			{
 				targetDateTimeOffset = targetDateTimeOffset.AddDays(1);
-			}
 
 			_logger.LogInformation($"{_logTag} Successfully parsed time: {targetDateTimeOffset}");
 			return targetDateTimeOffset;
