@@ -126,6 +126,8 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 
 	private async Task<Message> SendWelcomeText(Message msg)
 	{
+		_filter.Clear();
+		_userStates.Remove(msg.From.Id);
 		await _telegramBotClient.SendChatAction(msg.Chat, ChatAction.Typing);
 		string _welcomeText = $"Hello, {msg.Chat.FirstName}. I'm an everyday image generator bot!";
 
@@ -247,33 +249,40 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 
 		string answer = string.Empty;
 
+		var user = await _userSettingsService.GetUserAsync(callbackQuery.From.Id);
+		var exists = _filter.TryAdd("user_id", user.Id);
+		if (!exists)
+		{
+			_filter["user_id"] = user.Id;
+		}
+		var userSubscription = await _supabaseService.GetDataAsync<Supscription>(_filter);
+
 		switch (callbackQuery.Data)
 		{
 			case "set_time":
 				answer = $"""
-				          Write down time using the format HH:MM:SS+ZZ. +ZZ is GMT. (Moscow is +03:00)
+				          {callbackQuery.From.FirstName}, Write down time using the format HH:MM:SS+ZZ. +ZZ is GMT. (Moscow is +03:00)
 				          Ex: 13:45:30+03:00
 				          """;
 				_userStates[callbackQuery.From.Id] = "awaiting_time";
 				break;
 			case "set_themes":
 				answer = $"""
-				          Write down 3 themes separated by comma.
+				          {callbackQuery.From.FirstName}, Write down 3 themes separated by comma.
 				          Ex: cars, racing, football
 				          """;
 				_userStates[callbackQuery.From.Id] = "awaiting_themes";
 				break;
 			case "set_plots":
 				answer = $"""
-				          Write down 3 feelings or plots separated by comma.
+				          {callbackQuery.From.FirstName}, Write down 3 feelings or plots separated by comma.
 				          Ex: upbeating, amazing, mysterious
 				          """;
 				_userStates[callbackQuery.From.Id] = "awaiting_plots";
 				break;
 			case "expire":
-				string timeLeft = string.Empty;
 				answer = $"""
-				          Your plan will expire in {timeLeft}.
+				          {callbackQuery.From.FirstName}, Your plan will expire on {DateTimeOffset.Parse(userSubscription.ExpirationDate):yyyy-MM-dd}.
 				          """;
 				break;
 
@@ -281,8 +290,8 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 				answer = "Unknown callback query";
 				break;
 		}
+		_filter.Remove("user_id");
 		await _telegramBotClient.SendMessage(callbackQuery.Message!.Chat, answer);
-		
 	}
 
 	private Task UnknownUpdateHandlerAsync(Update update)
