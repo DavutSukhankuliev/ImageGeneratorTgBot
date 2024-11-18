@@ -25,13 +25,15 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 	private readonly SupabaseService _supabaseService;
 	private readonly TaskSchedulerService _scheduler;
 	private readonly UserSettingsService _userSettingsService;
+	private readonly GoogleSheetsService _googleSheetsService;
 
 	public TelegramUpdateHandlerService(ILogger<TelegramUpdateHandlerService> logger,
 		ITelegramBotClient telegramBotClient,
 		HuggingFaceService huggingFace,
 		SupabaseService supabaseService,
 		TaskSchedulerService scheduler,
-		UserSettingsService userSettingsService)
+		UserSettingsService userSettingsService, 
+		GoogleSheetsService googleSheetsService)
 	{
 		_logger = logger;
 		_telegramBotClient = telegramBotClient;
@@ -39,6 +41,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		_supabaseService = supabaseService;
 		_scheduler = scheduler;
 		_userSettingsService = userSettingsService;
+		_googleSheetsService = googleSheetsService;
 
 		_stateHandlers = new Dictionary<string, Func<Message, Task<string>>>
 		{
@@ -284,6 +287,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 				answer = $"""
 				          {callbackQuery.From.FirstName}, Your plan will expire on {DateTimeOffset.Parse(userSubscription.ExpirationDate):yyyy-MM-dd}.
 				          """;
+				_ = _googleSheetsService.AddEventExpirationToSheet(callbackQuery.From.Id.ToString(), DateTimeOffset.Parse(userSubscription.ExpirationDate).ToString("yyyy-MM-dd"));
 				break;
 
 			default:
@@ -333,6 +337,7 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		updateSettings(settings);
 		await _supabaseService.UpdateDataAsync(settings.Id, settings);
 
+		_logger.LogInformation("{LogTag} TimeToSend: {TimeToSend}", _logTag, settings.TimeToSend);
 		await _userSettingsService.UpdateSettingsAsync(msg.From.Id, settings);
 
 		return "Settings saved!";
@@ -348,6 +353,9 @@ public class TelegramUpdateHandlerService : IUpdateHandler
 		                       $"\r\n {settings.Function}" +
 		                       $"\r\n {settings.CreatedAt}" +
 		                       $"\r\n {settings.Themes}");
+
+		_ = _googleSheetsService.AddEventToSheet(chatId.ToString(), DateTimeOffset.Parse(settings.TimeToSend).ToString("HH:mm:ss.fffzzz"));
+		_ = _googleSheetsService.AddEventThemesToSheet(chatId.ToString(), settings.Themes, settings.Function);
 
 		_scheduler.Schedule(
 			chatId,

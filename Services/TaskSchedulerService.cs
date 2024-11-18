@@ -124,7 +124,19 @@ public class TaskSchedulerService(
 		{
 			_logger.LogInformation($"{_logTag} Attempting to parse time string: {timeString}");
 
-			var formats = new[] { "MM/dd/yyyy HH:mm:ss zzz", "HH:mm:sszzz" };
+			if (timeString.Length <= 12)
+			{
+				timeString = timeString.Insert(timeString.Length, ":00");
+			}
+
+			_logger.LogInformation($"{_logTag} Resulted time string: {timeString}");
+
+			var formats = new[]
+			{
+				"MM/dd/yyyy HH:mm:ss zzz",
+				"HH:mm:sszzz",
+				"HH:mm:ss zzz",
+			};
 
 			if (DateTimeOffset.TryParseExact(timeString, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var result))
 			{
@@ -132,7 +144,7 @@ public class TaskSchedulerService(
 				return result;
 			}
 
-			throw new FormatException("Unsupported time format.");
+			throw new FormatException($"Unsupported time format: {timeString}");
 		}
 		catch (FormatException ex)
 		{
