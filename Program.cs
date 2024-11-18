@@ -59,6 +59,7 @@ builder.Services.AddSingleton<HuggingFaceChatAdapter>();
 
 builder.Services.AddSingleton<TaskSchedulerService>();
 builder.Services.AddSingleton<UserSettingsService>();
+builder.Services.AddSingleton<GoogleSheetsService>();
 
 builder.Services.AddControllers();
 
